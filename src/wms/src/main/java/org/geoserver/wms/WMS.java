@@ -1,4 +1,4 @@
-/* Copyright (c) 2001 - 2013 OpenPlans - www.openplans.org. All rights reserved.
+/* Copyright (c) 2001 - 2014 OpenPlans - www.openplans.org. All rights reserved.
  * This code is licensed under the GPL 2.0 license, available at the root
  * application directory.
  */
@@ -84,6 +84,7 @@ import org.springframework.beans.BeansException;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
 
+import com.sun.media.jai.codec.PNGEncodeParam;
 import com.vividsolutions.jts.geom.Coordinate;
 
 /**
@@ -120,6 +121,10 @@ public class WMS implements ApplicationContextAware {
     public static final String LOOP_CONTINUOUSLY = "loopContinuously";
 
     public static final Boolean LOOP_CONTINUOUSLY_DEFAULT = Boolean.FALSE;
+    
+    public static final String SCALEHINT_MAPUNITS_PIXEL = "scalehintMapunitsPixel";
+    
+    public static final Boolean SCALEHINT_MAPUNITS_PIXEL_DEFAULT = Boolean.FALSE;
     
     static final Logger LOGGER = Logging.getLogger(WMS.class);
 
@@ -301,9 +306,9 @@ public class WMS implements ApplicationContextAware {
         return getServiceInfo().getInterpolation();
     }
 
-    public Boolean getPNGNativeAcceleration() {
+    public JAIInfo.PngEncoderType getPNGEncoderType() {
         JAIInfo jaiInfo = getJaiInfo();
-        return Boolean.valueOf(jaiInfo.isPngAcceleration());
+        return jaiInfo.getPngEncoderType();
     }
 
     public Boolean getJPEGNativeAcceleration() {
@@ -487,6 +492,10 @@ public class WMS implements ApplicationContextAware {
     public Boolean getLoopContinuously() {
        return getMetadataValue(LOOP_CONTINUOUSLY, LOOP_CONTINUOUSLY_DEFAULT, Boolean.class);
     }
+    
+    public Boolean getScalehintUnitPixel(){
+        return getMetadataValue(SCALEHINT_MAPUNITS_PIXEL, SCALEHINT_MAPUNITS_PIXEL_DEFAULT, Boolean.class);
+    }
 
     int getMetadataPercentage(MetadataMap metadata, String key, int defaultValue) {
         Integer parsedValue = Converters.convert(metadata.get(key), Integer.class);
@@ -570,14 +579,28 @@ public class WMS implements ApplicationContextAware {
     }
 
     /**
-     * Returns all available map output formats.
+     * Returns all allowed map output formats. 
+     */
+    public Collection<GetMapOutputFormat> getAllowedMapFormats() {
+        List<GetMapOutputFormat> result = new ArrayList<GetMapOutputFormat>();
+        for (GetMapOutputFormat producer:  WMSExtensions.findMapProducers(applicationContext)) {
+            if (isAllowedGetMapFormat(producer)) {
+                result.add(producer);
+            }
+        }
+        return result;
+    }
+    
+    /**
+     * Returns all  map output formats. 
      */
     public Collection<GetMapOutputFormat> getAvailableMapFormats() {
         return WMSExtensions.findMapProducers(applicationContext);
     }
 
+
     /**
-     * Grabs the list of available MIME-Types for the GetMap operation from the set of
+     * Grabs the list of allowed MIME-Types for the GetMap operation from the set of
      * {@link GetMapOutputFormat}s registered in the application context.
      * 
      * @param applicationContext
@@ -593,10 +616,86 @@ public class WMS implements ApplicationContextAware {
         for (GetMapOutputFormat producer : producers) {
             formats.addAll(producer.getOutputFormatNames());
         }
+        return formats;
+
+    }
+    
+    /**
+     * @return all allowed GetMap format names
+     */
+    public Set<String> getAllowedMapFormatNames() {
+
+        final Collection<GetMapOutputFormat> producers;
+        producers = WMSExtensions.findMapProducers(applicationContext);
+        final Set<String> formats = new HashSet<String>();
+
+        for (GetMapOutputFormat producer : producers) {
+            if (isAllowedGetMapFormat(producer)==false) {
+                continue; // skip this producer, its mime type is not allowed
+            }
+            formats.addAll(producer.getOutputFormatNames());
+        }
 
         return formats;
 
     }
+
+    
+    /**
+     * Checks is a getMap mime type is allowed
+     * 
+     * @param format
+     * @return
+     */
+    public boolean isAllowedGetMapFormat(GetMapOutputFormat format) {
+        
+        if  (getServiceInfo().isGetMapMimeTypeCheckingEnabled()==false)
+            return true;
+        Set<String> mimeTypes = getServiceInfo().getGetMapMimeTypes();
+        return mimeTypes.contains(format.getMimeType());
+    }
+    
+    /**
+     * Checks is a getFeatureInfo mime type is allowed
+     * 
+     * @param format
+     * @return
+     */
+    public boolean isAllowedGetFeatureInfoFormat(GetFeatureInfoOutputFormat format) {
+        if (getServiceInfo().isGetFeatureInfoMimeTypeCheckingEnabled()==false)
+            return true;
+        Set<String> mimeTypes = getServiceInfo().getGetFeatureInfoMimeTypes();
+        return mimeTypes.contains(format.getContentType());
+    }
+
+    /**
+     * create a {@link ServiceException} for an unallowed
+     * GetFeatureInfo format
+     * 
+     * @param requestFormat
+     * @return
+     */
+    public ServiceException unallowedGetFeatureInfoFormatException(String requestFormat) {
+        ServiceException e = new ServiceException("Getting feature info using "
+                + requestFormat + " is not allowed", "ForbiddenFormat");
+        e.setCode("ForbiddenFormat");
+        return e;
+    }
+
+    /**
+     * create a {@link ServiceException} for an unallowed
+     * GetMap format
+     * 
+     * @param requestFormat
+     * @return
+     */
+    public ServiceException unallowedGetMapFormatException(String requestFormat) {
+        ServiceException e = new ServiceException("Creating maps using "
+            + requestFormat + " is not allowed", "ForbiddenFormat");
+        e.setCode("ForbiddenFormat");
+        return e;
+    }
+
 
     public Set<String> getAvailableLegendGraphicsFormats() {
 
@@ -642,14 +741,31 @@ public class WMS implements ApplicationContextAware {
         return null;
     }
 
+    /**
+     * @return a list of all getFeatureInfo content types
+     */
     public List<String> getAvailableFeatureInfoFormats() {
-        List<GetFeatureInfoOutputFormat> outputFormats;
-        outputFormats = WMSExtensions.findFeatureInfoFormats(applicationContext);
-        List<String> mimeTypes = new ArrayList<String>(outputFormats.size());
-        for (GetFeatureInfoOutputFormat format : outputFormats) {
+        List<String> mimeTypes = new ArrayList<String>();
+        for (GetFeatureInfoOutputFormat format : WMSExtensions.findFeatureInfoFormats(applicationContext)) {
             mimeTypes.add(format.getContentType());
         }
         return mimeTypes;
+        
+    }
+    
+    /**
+     * @return a list of all allowed getFeature info content types
+     */
+    public List<String> getAllowedFeatureInfoFormats() {
+        List<String> mimeTypes = new ArrayList<String>();
+        for (GetFeatureInfoOutputFormat format : WMSExtensions.findFeatureInfoFormats(applicationContext)) {
+            if (isAllowedGetFeatureInfoFormat(format)==false) {
+                continue; // skip this format
+            }                
+            mimeTypes.add(format.getContentType());
+        }
+        return mimeTypes;
+        
     }
 
     /**
@@ -756,6 +872,13 @@ public class WMS implements ApplicationContextAware {
                     "Failed to determin if the layer is queryable, assuming it's not", e);
             return false;
         }
+    }
+
+    /**
+     * Returns true if the layer is opaque
+     */
+    public boolean isOpaque(LayerInfo layer) {
+        return layer.isOpaque();
     }
 
     public Integer getCascadedHopCount(LayerInfo layer) {
@@ -1162,9 +1285,9 @@ public class WMS implements ApplicationContextAware {
                 // @todo adding another option to dimensionInfo allows contains, versus intersects
                 Literal qlower = ff.literal(range.getMinValue());
                 Literal qupper = ff.literal(range.getMaxValue());
-                Filter lower = ff.between(attribute, qlower, qupper);
-                Filter upper = ff.between(endAttribute, qlower, qupper);
-                return ff.or(lower, upper);
+                Filter lower = ff.lessOrEqual(attribute, qupper);
+                Filter upper = ff.greaterOrEqual(endAttribute, qlower);
+                return ff.and(lower, upper);
             }
         } else {
             // Single element is equal to

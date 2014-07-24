@@ -24,6 +24,7 @@ import org.geoserver.script.app.AppHook;
 import org.geoserver.script.function.FunctionHook;
 import org.geoserver.script.wfs.WfsTxHook;
 import org.geoserver.script.wps.WpsHook;
+import org.geoserver.security.GeoServerSecurityManager;
 import org.geotools.util.logging.Logging;
 import org.springframework.beans.factory.InitializingBean;
 
@@ -43,6 +44,7 @@ public class ScriptManager implements InitializingBean {
 
     GeoServerDataDirectory dataDir;
     ScriptEngineManager engineMgr;
+    GeoServerSecurityManager secMgr;
 
     volatile List<ScriptPlugin> plugins;
     Cache<Long, ScriptSession> sessions;
@@ -56,6 +58,14 @@ public class ScriptManager implements InitializingBean {
 
     public GeoServerDataDirectory getDataDirectory() {
         return dataDir;
+    }
+
+    public GeoServerSecurityManager getSecurityManager() {
+        return secMgr != null ? secMgr :GeoServerExtensions.bean(GeoServerSecurityManager.class);
+    }
+
+    public void setSecurityManager(GeoServerSecurityManager secMgr) {
+        this.secMgr = secMgr;
     }
 
     /**
@@ -129,6 +139,17 @@ public class ScriptManager implements InitializingBean {
     }
 
     /**
+     * Finds a script file at the specified path, creating it if necessary.
+     */
+    public File findOrCreateScriptFile(String path) throws IOException {
+        File f = new File(getScriptRoot(), path);
+        if (!f.getParentFile().exists()) {
+            f.getParentFile().mkdirs();
+        }
+        return f;
+    }
+
+    /**
      * The root "apps" directory, located directly under {@link #getScriptRoot()}.
      */
     public File getAppRoot() throws IOException {
@@ -149,6 +170,20 @@ public class ScriptManager implements InitializingBean {
         return findOrCreateScriptDir("apps" + File.separator + app);
     }
 
+    /**
+     * Find the main script File
+     */
+    public File findAppMainScript(File appDir) {
+        File main = null;
+        for (File f : appDir.listFiles()) {
+            if ("main".equals(FilenameUtils.getBaseName(f.getName()))) {
+                main = f;
+                break;
+            }
+        }
+        return main;
+    }
+    
     /**
      * The root "wps" directory, located directly under {@link #getScriptRoot()} 
      */

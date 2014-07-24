@@ -1,10 +1,11 @@
-/* Copyright (c) 2001 - 2013 OpenPlans - www.openplans.org. All rights reserved.
+/* Copyright (c) 2001 - 2014 OpenPlans - www.openplans.org. All rights reserved.
  * This code is licensed under the GPL 2.0 license, available at the root
  * application directory.
  */
 package org.geoserver.wms.wms_1_1_1;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -29,6 +30,7 @@ import javax.imageio.ImageIO;
 import javax.servlet.ServletResponse;
 import javax.xml.namespace.QName;
 
+import org.apache.batik.bridge.svg12.SVG12BridgeContext;
 import org.apache.commons.io.FileUtils;
 import org.apache.log4j.AppenderSkeleton;
 import org.apache.log4j.spi.LoggingEvent;
@@ -42,8 +44,15 @@ import org.geoserver.data.test.SystemTestData;
 import org.geoserver.data.test.SystemTestData.LayerProperty;
 import org.geoserver.test.RemoteOWSTestSupport;
 import org.geoserver.wms.GetMap;
+import org.geoserver.wms.GetMapOutputFormat;
 import org.geoserver.wms.WMS;
+import org.geoserver.wms.WMSInfo;
 import org.geoserver.wms.WMSTestSupport;
+import org.geoserver.wms.featureinfo.GML3FeatureInfoOutputFormat;
+import org.geoserver.wms.featureinfo.GetFeatureInfoOutputFormat;
+import org.geoserver.wms.featureinfo.TextFeatureInfoOutputFormat;
+import org.geoserver.wms.map.OpenLayersMapOutputFormat;
+import org.geoserver.wms.map.RenderedImageMapOutputFormat;
 import org.geotools.gce.imagemosaic.ImageMosaicFormat;
 import org.junit.Test;
 import org.w3c.dom.Document;
@@ -53,6 +62,8 @@ import com.mockrunner.mock.web.MockHttpServletResponse;
 
 public class GetMapIntegrationTest extends WMSTestSupport {
     
+    private static final QName ONE_BIT = new QName(MockData.SF_URI, "onebit", MockData.SF_PREFIX);
+
     String bbox = "-130,24,-66,50";
 
     String styles = "states";
@@ -151,6 +162,10 @@ public class GetMapIntegrationTest extends WMSTestSupport {
         properties.put(LayerProperty.STYLE,"raster");
         testData.addRasterLayer(new QName(MockData.SF_URI, "mosaic_holes", MockData.SF_PREFIX),
                 "mosaic_holes.zip", null, properties,GetMapIntegrationTest.class,catalog);
+        
+        testData.addRasterLayer(ONE_BIT,
+                "onebit.zip", null, properties,GetMapIntegrationTest.class,catalog);
+
     }
     
     // protected String getDefaultLogConfiguration() {
@@ -164,6 +179,45 @@ public class GetMapIntegrationTest extends WMSTestSupport {
                 + "&width=550" + "&height=250" + "&srs=EPSG:4326");
         checkImage(response);
     }
+    
+    @Test
+    public void testAllowedMimeTypes() throws Exception {
+        
+        WMSInfo wms = getWMS().getServiceInfo();
+        GetMapOutputFormat format = new RenderedImageMapOutputFormat(getWMS());        
+        wms.getGetMapMimeTypes().add(format.getMimeType());
+        wms.setGetMapMimeTypeCheckingEnabled(true);
+        
+
+        getGeoServer().save(wms);
+
+     // check mime type allowed
+        MockHttpServletResponse response = getAsServletResponse("wms?bbox=" + bbox
+                + "&styles=&layers=" + layers + "&Format=image/png" + "&request=GetMap"
+                + "&width=550" + "&height=250" + "&srs=EPSG:4326");
+        checkImage(response);
+        
+        
+     // check mime type not allowed                
+        String result = getAsString("wms?bbox=" + bbox
+                + "&styles=&layers=" + layers + "&Format="+OpenLayersMapOutputFormat.MIME_TYPE+ "&request=GetMap"
+                + "&width=550" + "&height=250" + "&srs=EPSG:4326");
+        assertTrue(result.indexOf("ForbiddenFormat") > 0);        
+                      
+        wms.setGetMapMimeTypeCheckingEnabled(false);
+        wms.getGetMapMimeTypes().clear();
+        getGeoServer().save(wms);
+        
+        result = getAsString("wms?bbox=" + bbox
+                + "&styles=&layers=" + layers + "&Format="+OpenLayersMapOutputFormat.MIME_TYPE+ "&request=GetMap"
+                + "&width=550" + "&height=250" + "&srs=EPSG:4326");
+
+        assertTrue(result.indexOf("OpenLayers") > 0);
+ 
+    }
+
+    
+    
     
     @Test
     public void testLayoutLegendNPE() throws Exception {
@@ -760,7 +814,16 @@ public class GetMapIntegrationTest extends WMSTestSupport {
         } finally {
             catalog.remove(group);
         }
-    }   
+    }
+    
+    @Test
+    public void testOneBit() throws Exception {
+        String url = "wms?LAYERS=" + getLayerId(ONE_BIT)
+                + "&STYLES=&FORMAT=image%2Fpng"
+                + "&SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&SRS=EPSG%3A4326&WIDTH=10&HEIGHT=10&BBOX=0,0,10,10";
+        // used to crash, should give us back a empty image instead
+        getAsImage(url, "image/png");
+    }
 
     
     @Test
@@ -806,5 +869,34 @@ public class GetMapIntegrationTest extends WMSTestSupport {
             geoserverInfo.setXmlExternalEntitiesEnabled(null);
             getGeoServer().save(geoserverInfo);     
         }
-    }     
+    }
+    
+    public void testRssMime() throws Exception {
+        MockHttpServletResponse response = getAsServletResponse("wms?request=reflect&layers=" + getLayerId(MockData.BASIC_POLYGONS) + "&format=rss");
+        assertEquals("application/rss+xml", response.getContentType());
+    }
+
+    /**
+     * Basic sanity tests on a polar stereographic projection (EPSG:5041) WMS response.
+     */
+    @Test
+    public void testPolarStereographic() throws Exception {
+        MockHttpServletResponse response = getAsServletResponse("wms?" + "service=WMS"
+                + "&version=1.1.1" + "&request=GetMap" + "&layers=sf:states"
+                + "&bbox=-10700000,-10700000,14700000,14700000,EPSG:5041" + "&width=200"
+                + "&height=200" + "&srs=EPSG:5041" + "&format=image%2Fpng");
+        checkImage(response, "image/png", 200, 200);
+        String testName = "testPolarStereographic";
+        BufferedImage image = ImageIO.read(getBinaryInputStream(response));
+        assertNotBlank(testName, image);
+        // top-left quadrant should not be blank
+        assertNotBlank(testName, image.getSubimage(0, 0, 100, 100));
+        // top 25% should be blank
+        assertEquals(0, countNonBlankPixels(testName, image.getSubimage(0, 0, 200, 50), BG_COLOR));
+        // right-hand side should be blank
+        assertEquals(0, countNonBlankPixels(testName, image.getSubimage(100, 0, 100, 200), BG_COLOR));
+        // bottom 35% should be blank
+        assertEquals(0, countNonBlankPixels(testName, image.getSubimage(0, 130, 200, 70), BG_COLOR));
+    }
+
 }

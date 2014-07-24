@@ -4,12 +4,17 @@
  */
 package org.geoserver.config;
 
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 import java.io.File;
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
 
+import org.apache.commons.io.FileUtils;
+import org.geoserver.catalog.NamespaceInfo;
 import org.geoserver.catalog.WorkspaceInfo;
 import org.geoserver.config.util.XStreamServiceLoader;
 import org.geoserver.data.test.SystemTestData;
@@ -32,18 +37,30 @@ public class ServicePersisterTest extends GeoServerSystemTestSupport {
                 (List) Arrays.asList(new ServiceLoader(getResourceLoader())), geoServer));
     }
 
+    @Override
+    protected void setUpSpring(List<String> springContextLocations) {
+        super.setUpSpring(springContextLocations);
+        springContextLocations
+                .add("classpath*:/org/geoserver/config/ServicePersisterTest-applicationContext.xml");
+    }
+
     @Before
     public void init() {
         geoServer = getGeoServer();
     }
 
     @Before
-    public void removeFooService() {
+    public void removeFooService() throws IOException {
         GeoServer geoServer = getGeoServer();
         WorkspaceInfo ws = getCatalog().getDefaultWorkspace();
         ServiceInfo s = geoServer.getServiceByName(ws, "foo", ServiceInfo.class);
         if (s != null) {
             geoServer.remove(s);
+        }
+
+        File serviceFile = getDataDirectory().findFile("service.xml");
+        if (serviceFile != null) {
+            serviceFile.delete();
         }
     }
 
@@ -77,8 +94,39 @@ public class ServicePersisterTest extends GeoServerSystemTestSupport {
         geoServer.remove(s);
         assertFalse(f.exists());
     }
+    
+    @Test
+    public void testReloadWithLocalServices() throws Exception {
+        // setup a non default workspace
+        WorkspaceInfo ws = getCatalog().getFactory().createWorkspace();
+        ws.setName("nonDefault");
+        NamespaceInfo ni = getCatalog().getFactory().createNamespace();
+        ni.setPrefix("nonDefault");
+        ni.setURI("http://www.geoserver.org/nonDefault");
+        getCatalog().add(ws);
+        getCatalog().add(ni);
 
-    static class ServiceLoader extends XStreamServiceLoader {
+        // create a ws specific setting
+        SettingsInfo s = geoServer.getFactory().createSettings();
+        s.setWorkspace(ws);
+
+        geoServer.add(s);
+        
+        getGeoServer().reload();
+        
+    }
+
+    @Test
+    public void testLoadGibberish() throws Exception {
+        // we should get a log message, but the startup should continue
+        File service = new File(getDataDirectory().getResourceLoader().getBaseDirectory(),
+                "service.xml");
+        FileUtils.writeStringToFile(service, "duDaDa");
+        getGeoServer().reload();
+        assertEquals(0, geoServer.getServices().size());
+    }
+
+    public static class ServiceLoader extends XStreamServiceLoader {
 
         public ServiceLoader(GeoServerResourceLoader resourceLoader) {
             super(resourceLoader, "service");

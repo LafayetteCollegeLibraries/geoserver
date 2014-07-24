@@ -35,11 +35,14 @@ import javax.servlet.ServletContextListener;
 import org.apache.commons.logging.LogFactory;
 import org.apache.log4j.LogManager;
 import org.geoserver.config.impl.CoverageAccessInfoImpl;
+import org.geoserver.jai.ConcurrentOperationRegistry;
 import org.geoserver.logging.LoggingUtils;
 import org.geoserver.platform.GeoServerExtensions;
+import org.geotools.coverage.CoverageFactoryFinder;
 import org.geotools.data.DataAccessFinder;
 import org.geotools.data.DataStoreFinder;
 import org.geotools.factory.CommonFactoryFinder;
+import org.geotools.factory.GeoTools;
 import org.geotools.factory.Hints;
 import org.geotools.image.io.ImageIOExt;
 import org.geotools.referencing.CRS;
@@ -68,6 +71,11 @@ public class GeoserverInitStartupListener implements ServletContextListener {
         // start up tctool - remove it before committing!!!!
         // new tilecachetool.TCTool().setVisible(true);
         
+        // setup concurrent operation registry
+        JAI jaiDef = JAI.getDefaultInstance();
+        if(!(jaiDef.getOperationRegistry() instanceof ConcurrentOperationRegistry)) {
+            jaiDef.setOperationRegistry(ConcurrentOperationRegistry.initializeRegistry());
+        }
         
         // make sure we remember if GeoServer controls logging or not
         String strValue = GeoServerExtensions.getProperty(LoggingUtils.RELINQUISH_LOG4J_CONTROL, 
@@ -92,6 +100,11 @@ public class GeoserverInitStartupListener implements ServletContextListener {
         // between projections (increases the chance of matching a random prj file content
         // to an actual EPSG code
         Hints.putSystemDefault(Hints.COMPARISON_TOLERANCE, 1e-9);
+        
+        final Hints defHints = GeoTools.getDefaultHints();
+
+        // Initialize GridCoverageFactory so that we don't make a lookup every time a factory is needed
+        Hints.putSystemDefault(Hints.GRID_COVERAGE_FACTORY,CoverageFactoryFinder.getGridCoverageFactory(defHints));
         
         // don't allow the connection to the EPSG database to time out. This is a server app,
         // we can afford keeping the EPSG db always on

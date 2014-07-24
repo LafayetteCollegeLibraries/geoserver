@@ -1,10 +1,13 @@
-/* Copyright (c) 2001 - 2013 OpenPlans - www.openplans.org. All rights reserved.
+/* Copyright (c) 2001 - 2014 OpenPlans - www.openplans.org. All rights reserved.
  * This code is licensed under the GPL 2.0 license, available at the root
  * application directory.
  */
 package org.geoserver.wms.capabilities;
 
-import static org.geoserver.ows.util.ResponseUtils.*;
+import static org.geoserver.ows.util.ResponseUtils.appendQueryString;
+import static org.geoserver.ows.util.ResponseUtils.buildSchemaURL;
+import static org.geoserver.ows.util.ResponseUtils.buildURL;
+import static org.geoserver.ows.util.ResponseUtils.params;
 
 import java.io.IOException;
 import java.net.MalformedURLException;
@@ -322,8 +325,10 @@ public class GetCapabilitiesTransformer extends TransformerBase {
             ContactInfo contact = geoServer.getSettings().getContact();
             handleContactInfo(contact);
 
-            element("Fees", serviceInfo.getFees());
-            element("AccessConstraints", serviceInfo.getAccessConstraints());
+            String fees = serviceInfo.getFees();
+            element("Fees", fees == null ? "none" : fees);
+            String constraints = serviceInfo.getAccessConstraints();
+            element("AccessConstraints", constraints == null ? "none" : constraints);
             end("Service");
         }
 
@@ -453,7 +458,7 @@ public class GetCapabilitiesTransformer extends TransformerBase {
 
             start("GetFeatureInfo");
 
-            for (String format : wmsConfig.getAvailableFeatureInfoFormats()) {
+            for (String format : wmsConfig.getAllowedFeatureInfoFormats()) {
                 element("Format", format);
             }
 
@@ -818,6 +823,8 @@ public class GetCapabilitiesTransformer extends TransformerBase {
             AttributesImpl qatts = new AttributesImpl();
             boolean queryable = wmsConfig.isQueryable(layer);
             qatts.addAttribute("", "queryable", "queryable", "", queryable ? "1" : "0");
+            boolean opaque = wmsConfig.isOpaque(layer);
+            qatts.addAttribute("", "opaque", "opaque", "", opaque ? "1" : "0");
             Integer cascaded = wmsConfig.getCascadedHopCount(layer);
             if (cascaded != null) {
                 qatts.addAttribute("", "cascaded", "cascaded", "", String.valueOf(cascaded));
@@ -934,43 +941,56 @@ public class GetCapabilitiesTransformer extends TransformerBase {
         
 
         
-    /**
-     * Inserts the ScaleHint element in the layer information. 
-     * <p>
-     * The process is consistent with the following criteria:
-     * </p>
-     * 
-     * <pre>
-     * a) min = 0.0, max= infinity => ScaleHint is not generated
-     * b) max=value => <ScaleHint min=0 max=value/>
-     * c) min=value => <ScaleHint min=value max=infinity/>
-     * </pre>
-     * 
-     * @param layer
-     */
-	private void handleScaleHint(LayerInfo layer) {
-		
-		try {
-			Map<String, Double>  denominators = CapabilityUtil.searchMinMaxScaleDenominator(MIN_DENOMINATOR_ATTR, MAX_DENOMINATOR_ATTR, layer);
-			
-			// makes the element taking into account that if the min and max denominators have got the default 
-			// values the ScaleHint element is not generated
-			if( (denominators.get(MIN_DENOMINATOR_ATTR) == 0.0) && 
-				(denominators.get(MAX_DENOMINATOR_ATTR) == Double.POSITIVE_INFINITY) ){
-				
-				return; 
-			}
-	        AttributesImpl attrs = new AttributesImpl();
-			attrs.addAttribute("", MIN_DENOMINATOR_ATTR, MIN_DENOMINATOR_ATTR, "", String.valueOf(denominators.get(MIN_DENOMINATOR_ATTR)));
-			attrs.addAttribute("", MAX_DENOMINATOR_ATTR, MAX_DENOMINATOR_ATTR, "", String.valueOf(denominators.get(MAX_DENOMINATOR_ATTR)));
+        /**
+         * Inserts the ScaleHint element in the layer information. 
+         * <p>
+         * The process is consistent with the following criteria:
+         * </p>
+         * 
+         * <pre>
+         * a) min = 0.0, max= infinity => ScaleHint is not generated
+         * b) max=value => <ScaleHint min=0 max=value/>
+         * c) min=value => <ScaleHint min=value max=infinity/>
+         * </pre>
+         * 
+         * @param layer
+         */
+        private void handleScaleHint(LayerInfo layer) {
 
-	        element("ScaleHint", null, attrs);
-	        
-		} catch (IOException e) {
-            LOGGER.log(Level.WARNING, e.getLocalizedMessage(), e);
-		}
-	}
-	
+            try {
+                Map<String, Double>  denominators = CapabilityUtil.searchMinMaxScaleDenominator(MIN_DENOMINATOR_ATTR, MAX_DENOMINATOR_ATTR, layer);
+
+                // makes the element taking into account that if the min and max denominators have got the default 
+                // values the ScaleHint element is not generated
+
+                if( (denominators.get(MIN_DENOMINATOR_ATTR) == 0.0) && 
+                        (denominators.get(MAX_DENOMINATOR_ATTR) == Double.POSITIVE_INFINITY) ){
+
+                    return; 
+                }
+
+                Double minScaleHint;
+                Double maxScaleHint;
+                if(wmsConfig.getScalehintUnitPixel()!=null && wmsConfig.getScalehintUnitPixel()){                
+                    // makes the scalehint computation taking into account the OGC standardized rendering pixel size" that is 0.28mm × 0.28mm (millimeters).
+                    minScaleHint =  CapabilityUtil.computeScaleHint(denominators.get(MIN_DENOMINATOR_ATTR));
+                    maxScaleHint =  CapabilityUtil.computeScaleHint(denominators.get(MAX_DENOMINATOR_ATTR));
+                }else{
+                    minScaleHint=denominators.get(MIN_DENOMINATOR_ATTR);
+                    maxScaleHint=denominators.get(MAX_DENOMINATOR_ATTR);
+                }			
+
+                AttributesImpl attrs = new AttributesImpl();
+                attrs.addAttribute("", MIN_DENOMINATOR_ATTR, MIN_DENOMINATOR_ATTR, "", String.valueOf(minScaleHint));
+                attrs.addAttribute("", MAX_DENOMINATOR_ATTR, MAX_DENOMINATOR_ATTR, "", String.valueOf(maxScaleHint));
+
+                element("ScaleHint", null, attrs);
+
+            } catch (IOException e) {
+                LOGGER.log(Level.WARNING, e.getLocalizedMessage(), e);
+            }
+        }
+
 
 	private String qualifySRS(String srs) {
            if (srs.indexOf(':') == -1) {
@@ -1080,7 +1100,26 @@ public class GetCapabilitiesTransformer extends TransformerBase {
             List<LayerGroupInfo> topLevelGropus = filterNestedGroups(layerGroups);
 
             for (LayerGroupInfo layerGroup : topLevelGropus) {
-                handleLayerGroup(layerGroup, layersAlreadyProcessed);
+                try {
+                    mark();
+                    handleLayerGroup(layerGroup, layersAlreadyProcessed);
+                    commit();
+                } catch (Exception e) {
+                    // report what layer we failed on to help the admin locate and fix it
+                    if (skipping) {
+                        if(layerGroup != null) {
+                            LOGGER.log(Level.WARNING, "Skipping layer group " + layerGroup.getName() + " as its caps document element failed to generate", e);
+                        } else {
+                            LOGGER.log(Level.WARNING, "Skipping a null layer group during caps during caps document generation", e);
+                        }
+
+                        reset();
+                    } else { 
+                        throw new ServiceException(
+                            "Error occurred trying to write out metadata for layer group: " + 
+                                    layerGroup.getName(), e);
+                    }
+                }
             }
             
             return layersAlreadyProcessed;
